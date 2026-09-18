@@ -59,7 +59,8 @@ def main(pos_path: str, ish_path: str, reg_path: str) -> int:
     assert chk["other_cells_changed"] == 0, chk["other_cells_changed"]
     assert not chk["mismatched"], list(chk["mismatched"].items())[:5]
     assert not chk["unplanned_changes"], chk["unplanned_changes"][:10]
-    assert not chk["buffer_survivors"], chk["buffer_survivors"][:10]
+    # Buffer is OFF in this tool by design, so 1s and 2s are expected:
+    # the written value must equal POS Column F exactly.
 
     # every value > 0 traces back to sellable POS rows summing to it
     pos_by_id = pos.by_id()
@@ -73,7 +74,6 @@ def main(pos_path: str, ish_path: str, reg_path: str) -> int:
                 if i in pos_by_id and not pos_by_id[i].excluded
             )
             assert total == row["Target Stock"], row
-            assert row["Target Stock"] > 2, f"buffer leak: {row}"
     print(f"\n{nonzero} listings end up > 0, all traced to Column F")
 
     assert not plan.double_fed, plan.double_fed[:5]

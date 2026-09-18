@@ -148,8 +148,9 @@ with st.expander("How matching works (IShopChangi rules)"):
 **Stock source** — POS **Column F, "Available Quantity"**, only. Never Column G,
 never a sum of the branch columns, never Quantity − Reserved − Transit.
 
-**Oversell buffer** — after taking Column F, a quantity of **1 or 2 becomes 0**.
-Every buffered item is listed before you download.
+**No buffer here** — the quantity written is POS Column F exactly, so
+IShopChangi mirrors the POS report. Oversell buffering is handled separately in
+the IShopChangi Inventory Adjustment process.
 
 **Rows excluded from IShopChangi**
 
@@ -255,8 +256,97 @@ cols = st.columns(4)
 for i, (k, v) in enumerate(s.items()):
     cols[i % 4].metric(k, v)
 
-for w in plan.warnings + exp.warnings:
-    st.warning(w)
+_warns = plan.warnings + exp.warnings
+if _warns:
+    with st.expander(f"⚠️ Warnings ({len(_warns)})"):
+        for w in _warns:
+            st.markdown(f"- {w}")
+
+# ---------------------------------------------------------------------------
+# Downloads — available immediately, no need to scroll or confirm first
+# ---------------------------------------------------------------------------
+st.subheader("Download")
+
+_mps = [l.mp_number for l in exp.listings if l.mp_number]
+_stamp = f"{date.today():%d-%m-%Y}"
+_values = {r: v for r, v in plan.stock_by_row.items() if v is not None}
+
+d1, d2 = st.columns(2)
+
+with d1:
+    st.download_button(
+        "⬇️ Match Review registry",
+        data=build_registry_workbook(
+            plan,
+            {"POS Masterlist": pos_file.name,
+             "IShopChangi export": ish_file.name,
+             "SKU Registry in": reg_file.name},
+            mp_numbers=_mps,
+        ),
+        file_name=f"IShopChangi_Match_Review_{_stamp}.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        use_container_width=True,
+    )
+    st.caption("Always available. Fill the dropdowns, then re-upload it above.")
+
+_unreviewed = plan.unreviewed_new_ml
+_needs_mp = [
+    r for r in plan.new_ml_rows
+    if r.get("Reviewer Decision") == DECISION_LINK
+    and not str(r.get("Link to MP Number") or "").strip()
+]
+
+with d2:
+    if _unreviewed or _needs_mp:
+        st.button("🔒 IShopChangi bulk file", disabled=True,
+                  use_container_width=True)
+        if _unreviewed:
+            st.caption(
+                f"Locked — {len(_unreviewed)} of {len(plan.new_ml_rows)} "
+                "New Masterlist SKUs need a Reviewer Decision."
+            )
+        else:
+            st.caption(
+                f'Locked — {len(_needs_mp)} row(s) say "{DECISION_LINK}" '
+                "but have no MP Number."
+            )
+    else:
+        try:
+            _out, _res = write_bulk_file(ish_bytes, exp.stock_qty_col, _values)
+            _chk = verify_written(ish_bytes, _out, exp.stock_qty_col, _values)
+        except ValueError as _ex:
+            _out, _chk = None, {"ok": False, "error": str(_ex)}
+
+        if _out is not None and _chk["ok"]:
+            st.download_button(
+                "⬇️ IShopChangi bulk file",
+                data=_out,
+                file_name=f"iShopChangi_Stock_Update_{_stamp}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument."
+                     "spreadsheetml.sheet",
+                type="primary",
+                use_container_width=True,
+            )
+            st.caption(
+                f"{len(_values)} listings written to column "
+                f"{_chk['column']} · quantities equal POS Column F exactly."
+            )
+        else:
+            st.button("⚠️ IShopChangi bulk file", disabled=True,
+                      use_container_width=True)
+            st.caption("Integrity check failed — see the detail below.")
+            st.json({k: v for k, v in _chk.items() if k != "ok"})
+
+if _unreviewed:
+    with st.expander(f"Rows still needing a Reviewer Decision "
+                     f"({len(_unreviewed)})"):
+        st.dataframe(
+            pd.DataFrame(_unreviewed)[
+                ["Masterlist Stock Type ID", "Brand", "Model", "Color",
+                 "Available Qty"]
+            ],
+            use_container_width=True, hide_index=True,
+        )
 
 st.divider()
 
@@ -279,25 +369,29 @@ with tabs[0]:
     )
     st.dataframe(pd.DataFrame(plan.locked_rows), use_container_width=True,
                  hide_index=True, height=440)
-    if plan.buffered:
-        st.warning(
-            f"**{len(plan.buffered)} listing(s) zeroed by the 1–2 unit oversell "
-            "buffer** — read this before uploading:"
-        )
-        st.dataframe(pd.DataFrame(plan.buffered), use_container_width=True,
-                     hide_index=True)
+
+    # A POS row feeding two listings is a real fault — keep it loud.
     if plan.double_fed:
         st.error("A POS row is feeding more than one listing:")
         st.dataframe(pd.DataFrame(plan.double_fed), use_container_width=True,
                      hide_index=True)
+
+    if plan.buffered:
+        with st.expander(f"Zeroed by the 1–2 unit buffer ({len(plan.buffered)})"):
+            st.dataframe(pd.DataFrame(plan.buffered),
+                         use_container_width=True, hide_index=True)
+
     if plan.unknown_ids:
-        st.info(
-            "Locked matches referencing Masterlist IDs that are not in today's "
-            "POS report (they contributed 0 — POS families come and go, so this "
-            "is a fact about today only):"
-        )
-        st.dataframe(pd.DataFrame(plan.unknown_ids), use_container_width=True,
-                     hide_index=True)
+        with st.expander(
+            f"Locked IDs not in today's POS report ({len(plan.unknown_ids)})"
+        ):
+            st.caption(
+                "They contributed 0. POS families come and go, so this is a "
+                "fact about today only — the links stay locked. The Status "
+                "column in the sheet says the same thing per row."
+            )
+            st.dataframe(pd.DataFrame(plan.unknown_ids),
+                         use_container_width=True, hide_index=True)
 
 with tabs[1]:
     st.caption(
@@ -418,123 +512,46 @@ with tabs[5]:
 st.divider()
 
 # ---------------------------------------------------------------------------
-# Confirm + export gate
+# Lock the reviewed matches into the registry
 # ---------------------------------------------------------------------------
-st.subheader("Confirm & export")
+if not (_unreviewed or _needs_mp) and plan.new_ml_rows:
+    if st.button("🔒 Lock reviewed matches & rebuild registry"):
+        apply_review_decisions(plan, reg)
+        final = apply_new_ml_decisions(plan, reg, exp, pos)
 
-unreviewed = plan.unreviewed_new_ml
-needs_mp = [
-    r for r in plan.new_ml_rows
-    if r.get("Reviewer Decision") == DECISION_LINK
-    and not str(r.get("Link to MP Number") or "").strip()
-]
-
-if unreviewed:
-    st.markdown(
-        f'<div class="mm-lock">🔒 Export locked — <b>{len(unreviewed)} of '
-        f"{len(plan.new_ml_rows)}</b> New Masterlist SKUs still have no Reviewer "
-        "Decision. Set a decision for every row on the "
-        "<i>New Masterlist SKUs</i> tab.</div>",
-        unsafe_allow_html=True,
-    )
-    st.dataframe(
-        pd.DataFrame(unreviewed)[
-            ["Masterlist Stock Type ID", "Brand", "Model", "Color", "Available Qty"]
-        ],
-        use_container_width=True, hide_index=True, height=260,
-    )
-elif needs_mp:
-    st.markdown(
-        f'<div class="mm-lock">🔒 Export locked — {len(needs_mp)} row(s) are set '
-        f'to "{DECISION_LINK}" but have no MP Number.</div>',
-        unsafe_allow_html=True,
-    )
-else:
-    st.success("All New Masterlist SKUs reviewed. Export unlocked.")
-
-    if st.button("✅ Confirm matches & build bulk file", type="primary"):
-        with st.spinner("Locking matches and building the bulk file…"):
-            apply_review_decisions(plan, reg)
-            final = apply_new_ml_decisions(plan, reg, exp, pos)
-
-            if final.errors:
-                for e in final.errors:
-                    st.error(e)
-                st.stop()
-
-        if final.newly_locked:
-            st.subheader("🔒 Newly locked matches")
-            st.success(
-                f"**{len(final.newly_locked)} match(es) locked in** from your "
-                "New Masterlist SKUs decisions. They are written into the "
-                "**Locked Matches** sheet of the registry below, so the sync "
-                "reads them from now on and never asks again."
-            )
-            st.dataframe(pd.DataFrame(final.newly_locked),
-                         use_container_width=True, hide_index=True)
-
-            values = {r: v for r, v in final.stock_by_row.items() if v is not None}
-            try:
-                out_bytes, res = write_bulk_file(
-                    ish_bytes, exp.stock_qty_col, values)
-            except ValueError as ex:
-                st.error(f"**Export aborted.** {ex}")
-                st.stop()
-
-            check = verify_written(ish_bytes, out_bytes, exp.stock_qty_col, values)
-
-        st.subheader("Integrity check")
-        if check["ok"]:
-            st.success(
-                f"Wrote **{check['cells_written']}** `stockQuantity` cells in "
-                f"column **{check['column']}**. Every other cell, column, sheet, "
-                "formula and style is byte-identical to the file you uploaded. "
-                "No value of 1 or 2 survived the buffer."
-            )
+        if final.errors:
+            for e in final.errors:
+                st.error(e)
         else:
-            st.error("Integrity check FAILED — do not upload this file.")
-            st.json({k: v for k, v in check.items() if k != "ok"})
-            st.stop()
+            if final.newly_locked:
+                st.success(
+                    f"{len(final.newly_locked)} match(es) locked into the "
+                    "Locked Matches sheet. Download the registry below and "
+                    "re-upload it next run — they will never be asked again."
+                )
+                st.dataframe(pd.DataFrame(final.newly_locked),
+                             use_container_width=True, hide_index=True)
+            else:
+                st.info("No new matches to lock.")
 
-        rows_untouched = len(exp.listings) - len(values)
-        st.info(
-            f"**{len(values)}** listings updated from locked matches · "
-            f"**{rows_untouched}** left untouched (Match Review rows keep their "
-            "existing seller stock)."
-        )
-
-        stamp = f"{date.today():%d-%m-%Y}"
-        d1, d2 = st.columns(2)
-        with d1:
             st.download_button(
-                "⬇️ IShopChangi bulk file",
-                data=out_bytes,
-                file_name=f"iShopChangi_Stock_Update_{stamp}.xlsx",
+                "⬇️ Match Review registry (with new locks)",
+                data=build_registry_workbook(
+                    final,
+                    {"POS Masterlist": pos_file.name,
+                     "IShopChangi export": ish_file.name,
+                     "SKU Registry in": reg_file.name},
+                    mp_numbers=_mps,
+                ),
+                file_name=f"IShopChangi_Match_Review_{_stamp}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument."
                      "spreadsheetml.sheet",
                 type="primary",
             )
-        with d2:
-            st.download_button(
-                "⬇️ Updated SKU Registry",
-                data=build_registry_workbook(final, {
-                    "POS Masterlist": pos_file.name,
-                    "IShopChangi export": ish_file.name,
-                    "SKU Registry in": reg_file.name,
-                }),
-                file_name=f"IShopChangi_Match_Review_{stamp}.xlsx",
-                mime="application/vnd.openxmlformats-officedocument."
-                     "spreadsheetml.sheet",
-            )
 
-        st.caption(
-            "Keep the updated SKU Registry and re-upload it next run — that is "
-            "what stops the tool asking about matches you have already confirmed."
-        )
-
-st.divider()
 st.caption(
-    "Mister Mobile · ECSS. Writes the `stockQuantity` column only. "
-    "Post-upload, pull a fresh IShopChangi export and diff it on `shop_sku` — "
-    "the marketplaces are ERP-linked and can over-ride an uploaded 0 back to 1."
+    "Mister Mobile · ECSS. Writes the `stockQuantity` column only, at POS "
+    "Column F exactly — no buffer is applied here. Post-upload, pull a fresh "
+    "IShopChangi export and diff it on `shop_sku`: the marketplaces are "
+    "ERP-linked and can over-ride an uploaded 0 back to 1."
 )

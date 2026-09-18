@@ -46,8 +46,43 @@ DECISION_NOT_YET = "Not on IShopChangi Yet"
 DECISION_SKIP = "Skip"
 DECISIONS = (DECISION_LINK, DECISION_NOT_SELLING, DECISION_NOT_YET, DECISION_SKIP)
 
-# Oversell safety buffer: after taking POS Column F, 1 or 2 becomes 0.
+# Oversell safety buffer: when enabled, a POS Column F value of 1 or 2 is
+# written as 0.
+#
+# DEFAULT IS OFF for this tool. Carmen's ruling, 18 Sep 2026: the stock sync
+# tool writes POS Column F exactly, so iShopChangi always mirrors the POS
+# report. Buffering is handled separately in the IShopChangi Inventory
+# Adjustment project. Keeping two tools from both buffering the same number is
+# the point — double-buffering would silently zero real stock.
 BUFFER_CEILING = 2
+APPLY_BUFFER_DEFAULT = False
+
+
+def norm_decision(raw) -> str:
+    """
+    Map whatever is in the cell onto a canonical decision.
+
+    The workbook ships with a dropdown, but a decision can still arrive
+    hand-typed or pasted, and a decision the reader does not recognise is
+    silently ignored — the row comes back unreviewed and the reviewer's work
+    is lost. So match case-insensitively on the squashed text.
+    """
+    s = " ".join(str(raw or "").split()).lower()
+    if not s:
+        return ""
+    for d in DECISIONS:
+        if s == d.lower():
+            return d
+    # Tolerate the common shorthands and near-misses.
+    if s.startswith("link"):
+        return DECISION_LINK
+    if "not selling" in s:
+        return DECISION_NOT_SELLING
+    if "not on" in s or "not yet" in s:
+        return DECISION_NOT_YET
+    if s.startswith("skip"):
+        return DECISION_SKIP
+    return ""
 
 
 def split_ids(cell) -> list[str]:
@@ -163,7 +198,7 @@ def load_registry(path_or_buf) -> Registry:
             if sid_c >= len(r) or r[sid_c] in (None, ""):
                 continue
             sid = str(r[sid_c]).strip()
-            dec = str(r[dec_c] or "").strip() if dec_c < len(r) else ""
+            dec = norm_decision(r[dec_c]) if dec_c < len(r) else ""
             if dec == DECISION_SKIP:
                 reg.skipped[sid] = (
                     str(r[note_c] or "").strip()
@@ -203,7 +238,7 @@ def load_registry(path_or_buf) -> Registry:
             if uuid_c >= len(r) or r[uuid_c] in (None, ""):
                 continue
             uuid = str(r[uuid_c]).strip()
-            dec = str(r[dec_c] or "").strip() if dec_c < len(r) else ""
+            dec = norm_decision(r[dec_c]) if dec_c < len(r) else ""
             if not dec:
                 continue
             reg.review_decisions[uuid] = dec
@@ -256,7 +291,7 @@ class SyncPlan:
 
 
 def build_plan(pos: PosReport, exp: IShopExport, reg: Registry,
-               apply_buffer: bool = True) -> SyncPlan:
+               apply_buffer: bool = APPLY_BUFFER_DEFAULT) -> SyncPlan:
     plan = SyncPlan()
     plan.errors += pos.errors + exp.errors + reg.errors
     plan.warnings += exp.warnings + reg.warnings
@@ -457,7 +492,8 @@ def _parked_row(n: int, sid: str, p: PosRow | None) -> dict:
 
 
 def apply_new_ml_decisions(plan: SyncPlan, reg: Registry, exp: IShopExport,
-                           pos: PosReport, apply_buffer: bool = True) -> SyncPlan:
+                           pos: PosReport,
+                           apply_buffer: bool = APPLY_BUFFER_DEFAULT) -> SyncPlan:
     """
     Fold reviewer decisions on New Masterlist SKUs into the registry, then
     recompute. Called after the reviewer finishes, before export.
@@ -550,7 +586,8 @@ def validation_summary(plan: SyncPlan) -> dict[str, int]:
             [r for r in plan.review_rows if not r.get("Reviewer Decision")]),
         "Not Selling in IShopChangi": len(plan.not_selling_rows),
         "Not on IShopChangi Yet": len(plan.not_yet_rows),
-        "Zeroed by 1-2 unit buffer": len(plan.buffered),
+        "Listings with stock > 0": sum(
+            1 for r in plan.locked_rows if r["Target Stock"] > 0),
         "Validation errors": len(plan.errors),
         "Unmatched / invalid records": len(plan.unknown_ids) + len(plan.double_fed),
     }

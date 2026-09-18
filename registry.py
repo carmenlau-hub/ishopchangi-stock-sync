@@ -46,8 +46,16 @@ DECISION_NOT_YET = "Not on IShopChangi Yet"
 DECISION_SKIP = "Skip"
 DECISIONS = (DECISION_LINK, DECISION_NOT_SELLING, DECISION_NOT_YET, DECISION_SKIP)
 
-# Oversell safety buffer: after taking POS Column F, 1 or 2 becomes 0.
+# Oversell safety buffer: when enabled, a POS Column F value of 1 or 2 is
+# written as 0.
+#
+# DEFAULT IS OFF for this tool. Carmen's ruling, 18 Sep 2026: the stock sync
+# tool writes POS Column F exactly, so iShopChangi always mirrors the POS
+# report. Buffering is handled separately in the IShopChangi Inventory
+# Adjustment project. Keeping two tools from both buffering the same number is
+# the point — double-buffering would silently zero real stock.
 BUFFER_CEILING = 2
+APPLY_BUFFER_DEFAULT = False
 
 
 def norm_decision(raw) -> str:
@@ -283,7 +291,7 @@ class SyncPlan:
 
 
 def build_plan(pos: PosReport, exp: IShopExport, reg: Registry,
-               apply_buffer: bool = True) -> SyncPlan:
+               apply_buffer: bool = APPLY_BUFFER_DEFAULT) -> SyncPlan:
     plan = SyncPlan()
     plan.errors += pos.errors + exp.errors + reg.errors
     plan.warnings += exp.warnings + reg.warnings
@@ -484,7 +492,8 @@ def _parked_row(n: int, sid: str, p: PosRow | None) -> dict:
 
 
 def apply_new_ml_decisions(plan: SyncPlan, reg: Registry, exp: IShopExport,
-                           pos: PosReport, apply_buffer: bool = True) -> SyncPlan:
+                           pos: PosReport,
+                           apply_buffer: bool = APPLY_BUFFER_DEFAULT) -> SyncPlan:
     """
     Fold reviewer decisions on New Masterlist SKUs into the registry, then
     recompute. Called after the reviewer finishes, before export.
@@ -577,7 +586,8 @@ def validation_summary(plan: SyncPlan) -> dict[str, int]:
             [r for r in plan.review_rows if not r.get("Reviewer Decision")]),
         "Not Selling in IShopChangi": len(plan.not_selling_rows),
         "Not on IShopChangi Yet": len(plan.not_yet_rows),
-        "Zeroed by 1-2 unit buffer": len(plan.buffered),
+        "Listings with stock > 0": sum(
+            1 for r in plan.locked_rows if r["Target Stock"] > 0),
         "Validation errors": len(plan.errors),
         "Unmatched / invalid records": len(plan.unknown_ids) + len(plan.double_fed),
     }

@@ -153,13 +153,17 @@ def verify_written(src_bytes: bytes, out_bytes: bytes, stock_col_index0: int,
     zin.close()
     zout.close()
     return {
+        # Values of 1 or 2 are NOT a failure. This tool writes POS Column F
+        # exactly and applies no buffer, so a genuine POS quantity of 1 or 2
+        # is the correct thing to write. Buffering happens in the separate
+        # IShopChangi Inventory Adjustment process.
         "ok": not differing_members and not mismatched and not unplanned
-              and not survivors and other_cells_changed == 0,
+              and other_cells_changed == 0,
         "differing_zip_members": differing_members,
         "other_cells_changed": other_cells_changed,
         "mismatched": mismatched,
         "unplanned_changes": unplanned,
-        "buffer_survivors": survivors,
+        "values_of_one_or_two": survivors,
         "cells_written": len(planned),
         "column": letter,
     }
