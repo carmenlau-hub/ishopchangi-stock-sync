@@ -11,10 +11,14 @@ import io
 from datetime import date
 
 import openpyxl
+from openpyxl.formatting.rule import FormulaRule
 from openpyxl.styles import Alignment, Border, Font, PatternFill, Side
 from openpyxl.utils import get_column_letter
+from openpyxl.worksheet.datavalidation import DataValidation
 
 from .registry import (
+    DECISION_LINK,
+    DECISIONS,
     SHEET_LOCKED,
     SHEET_NEW_ML,
     SHEET_NOT_SELLING,
@@ -24,6 +28,19 @@ from .registry import (
     SyncPlan,
     validation_summary,
 )
+
+# Hidden sheet holding the dropdown source lists. Referencing a real range
+# (rather than an inline "a,b,c" formula) keeps the dropdowns working in both
+# Excel and Google Sheets, and has no 255-character limit — which matters
+# because the MP list runs to several hundred entries.
+SHEET_LISTS = "_Lists"
+
+# Spare rows below the data that also get the dropdown, so rows added by hand
+# still validate.
+SPARE_ROWS = 300
+
+BAD_FILL = PatternFill("solid", fgColor="FFC7CE")   # decision set, MP missing
+WARN_FILL = PatternFill("solid", fgColor="FFF2CC")  # MP filled, decision missing
 
 MM_YELLOW = "FFE800"
 MM_BLACK = "000000"
@@ -88,7 +105,89 @@ def _write_sheet(ws, headers: list[str], rows: list[dict]) -> None:
         ws.auto_filter.ref = f"A1:{get_column_letter(len(headers))}{len(rows) + 1}"
 
 
-def build_registry_workbook(plan: SyncPlan, source_names: dict[str, str]) -> bytes:
+def _write_lists_sheet(wb, mp_numbers: list[str]) -> None:
+    """Hidden sheet feeding the dropdowns."""
+    ws = wb.create_sheet(SHEET_LISTS)
+    ws["A1"] = "Reviewer Decision"
+    for i, d in enumerate(DECISIONS, start=2):
+        ws[f"A{i}"] = d
+    ws["B1"] = "MP Number"
+    for i, mp in enumerate(mp_numbers, start=2):
+        ws[f"B{i}"] = mp
+    ws.sheet_state = "hidden"
+
+
+def _add_review_controls(ws, headers: list[str], n_rows: int,
+                         n_mp: int, partner_col: str) -> None:
+    """
+    Put a dropdown on Reviewer Decision, a dropdown on the column that must
+    tally with it, and red/amber highlighting when the two disagree.
+
+    partner_col is the header whose value 'Link to MP' requires:
+      - New Masterlist SKUs -> 'Link to MP Number'
+      - Match Review        -> 'Corrected Masterlist ID'
+    """
+    if "Reviewer Decision" not in headers:
+        return
+
+    last = max(n_rows + 1, 2) + SPARE_ROWS
+    dec_col = get_column_letter(headers.index("Reviewer Decision") + 1)
+
+    dv_dec = DataValidation(
+        type="list",
+        formula1=f"'{SHEET_LISTS}'!$A$2:$A${len(DECISIONS) + 1}",
+        allow_blank=True,
+        showDropDown=False,          # False = SHOW the in-cell dropdown arrow
+    )
+    dv_dec.error = ("Pick one of: " + ", ".join(DECISIONS) +
+                    ". Typing anything else means the sync tool cannot read "
+                    "this row.")
+    dv_dec.errorTitle = "Invalid Reviewer Decision"
+    dv_dec.prompt = ("Link to MP — confirm the match and lock it\n"
+                     "Not Selling in IShopChangi — park it\n"
+                     "Not on IShopChangi Yet — awaiting a listing\n"
+                     "Skip — decide later")
+    dv_dec.promptTitle = "Reviewer Decision"
+    ws.add_data_validation(dv_dec)
+    dv_dec.add(f"{dec_col}2:{dec_col}{last}")
+
+    if partner_col not in headers:
+        return
+    p_col = get_column_letter(headers.index(partner_col) + 1)
+
+    # MP Number gets a dropdown of the real MP numbers in today's export.
+    if partner_col == "Link to MP Number" and n_mp:
+        dv_mp = DataValidation(
+            type="list",
+            formula1=f"'{SHEET_LISTS}'!$B$2:$B${n_mp + 1}",
+            allow_blank=True,
+            showDropDown=False,
+        )
+        dv_mp.error = ("That MP Number is not in the IShopChangi export you "
+                       "uploaded. Pick from the list.")
+        dv_mp.errorTitle = "Unknown MP Number"
+        ws.add_data_validation(dv_mp)
+        dv_mp.add(f"{p_col}2:{p_col}{last}")
+
+    lo, hi = sorted([dec_col, p_col])
+    rng = f"{lo}2:{hi}{last}"
+
+    # RED: decision is 'Link to MP' but the partner cell is empty -> nothing
+    # can be locked, and the export stays blocked until it is filled.
+    ws.conditional_formatting.add(rng, FormulaRule(
+        formula=[f'AND(${dec_col}2="{DECISION_LINK}",${p_col}2="")'],
+        fill=BAD_FILL, stopIfTrue=False,
+    ))
+    # AMBER: partner filled but no decision -> the link is ignored until a
+    # decision is set.
+    ws.conditional_formatting.add(rng, FormulaRule(
+        formula=[f'AND(${p_col}2<>"",${dec_col}2="")'],
+        fill=WARN_FILL, stopIfTrue=False,
+    ))
+
+
+def build_registry_workbook(plan: SyncPlan, source_names: dict[str, str],
+                            mp_numbers: list[str] | None = None) -> bytes:
     wb = openpyxl.Workbook()
     ws = wb.active
     ws.title = SHEET_SUMMARY
@@ -118,6 +217,15 @@ def build_registry_workbook(plan: SyncPlan, source_names: dict[str, str]) -> byt
     ws.column_dimensions["B"].width = 42
     ws.column_dimensions["C"].width = 48
 
+    mps = sorted(set(mp_numbers or []))
+    _write_lists_sheet(wb, mps)
+
+    # Which column must tally with a 'Link to MP' decision on each sheet.
+    PARTNER = {
+        SHEET_NEW_ML: "Link to MP Number",
+        SHEET_REVIEW: "Corrected Masterlist ID",
+    }
+
     for name, rows in (
         (SHEET_LOCKED, plan.locked_rows),
         (SHEET_NEW_ML, plan.new_ml_rows),
@@ -125,7 +233,14 @@ def build_registry_workbook(plan: SyncPlan, source_names: dict[str, str]) -> byt
         (SHEET_NOT_SELLING, plan.not_selling_rows),
         (SHEET_NOT_YET, plan.not_yet_rows),
     ):
-        _write_sheet(wb.create_sheet(name), COLUMNS[name], rows)
+        sheet = wb.create_sheet(name)
+        _write_sheet(sheet, COLUMNS[name], rows)
+        if name in PARTNER:
+            _add_review_controls(sheet, COLUMNS[name], len(rows),
+                                 len(mps), PARTNER[name])
+
+    # Move _Lists to the end so the review tabs stay where Carmen expects them.
+    wb.move_sheet(SHEET_LISTS, offset=len(wb.sheetnames))
 
     buf = io.BytesIO()
     wb.save(buf)

@@ -50,6 +50,33 @@ DECISIONS = (DECISION_LINK, DECISION_NOT_SELLING, DECISION_NOT_YET, DECISION_SKI
 BUFFER_CEILING = 2
 
 
+def norm_decision(raw) -> str:
+    """
+    Map whatever is in the cell onto a canonical decision.
+
+    The workbook ships with a dropdown, but a decision can still arrive
+    hand-typed or pasted, and a decision the reader does not recognise is
+    silently ignored — the row comes back unreviewed and the reviewer's work
+    is lost. So match case-insensitively on the squashed text.
+    """
+    s = " ".join(str(raw or "").split()).lower()
+    if not s:
+        return ""
+    for d in DECISIONS:
+        if s == d.lower():
+            return d
+    # Tolerate the common shorthands and near-misses.
+    if s.startswith("link"):
+        return DECISION_LINK
+    if "not selling" in s:
+        return DECISION_NOT_SELLING
+    if "not on" in s or "not yet" in s:
+        return DECISION_NOT_YET
+    if s.startswith("skip"):
+        return DECISION_SKIP
+    return ""
+
+
 def split_ids(cell) -> list[str]:
     """'31415; 32771' -> ['31415', '32771']"""
     if cell in (None, ""):
@@ -163,7 +190,7 @@ def load_registry(path_or_buf) -> Registry:
             if sid_c >= len(r) or r[sid_c] in (None, ""):
                 continue
             sid = str(r[sid_c]).strip()
-            dec = str(r[dec_c] or "").strip() if dec_c < len(r) else ""
+            dec = norm_decision(r[dec_c]) if dec_c < len(r) else ""
             if dec == DECISION_SKIP:
                 reg.skipped[sid] = (
                     str(r[note_c] or "").strip()
@@ -203,7 +230,7 @@ def load_registry(path_or_buf) -> Registry:
             if uuid_c >= len(r) or r[uuid_c] in (None, ""):
                 continue
             uuid = str(r[uuid_c]).strip()
-            dec = str(r[dec_c] or "").strip() if dec_c < len(r) else ""
+            dec = norm_decision(r[dec_c]) if dec_c < len(r) else ""
             if not dec:
                 continue
             reg.review_decisions[uuid] = dec
