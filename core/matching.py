@@ -115,31 +115,35 @@ class Suggestion:
     def label(self) -> str:
         """
         Compact. The row being reviewed already shows the brand and model, so
-        repeating the full POS model string on every suggestion made the cell
-        unreadable. Only the variant, quantity and score are shown; the family
-        is added back only when the suggestion is from a different family.
+        repeating the full POS model string made the cell unreadable. Only the
+        variant and quantity are shown; the family is added back only when the
+        suggestion comes from a different family.
+
+        An exact match ends in '✓'. Anything less carries its score, because
+        that is the reviewer's cue to check it rather than trust it.
         """
         p = self.pos_row
         v = _variant(p.capacity, p.ram, p.colour) or p.model_raw
         if not self.same_family:
             v = f"{p.base} {v}".strip()
-        return f"{p.stock_type_id} · {v} · q{p.available} · {int(self.score * 100)}%"
+        tail = "✓" if self.exact else f"{int(self.score * 100)}%"
+        return f"{p.stock_type_id} · {v} · q{p.available} · {tail}"
 
 
 MIN_SUGGESTION_SCORE = 0.75      # below this it is noise, not a candidate
-MAX_SUGGESTIONS = 3
+
+# ONE suggestion per cell. Stacking two or three made the column unreadable in
+# the spreadsheet, and the extras were nearly always same-family rows with the
+# wrong capacity or colour — they hid the answer rather than helping. The
+# reviewer can still type any ID into 'Corrected Masterlist ID'.
+MAX_SUGGESTIONS = 1
 
 
 def format_suggestions(sugg: list[Suggestion]) -> str:
-    """
-    One short cell. If an exact match exists, show ONLY the exact ones —
-    listing five same-family wrong-capacity rows beside the right answer made
-    the column unreadable and hid the answer. Otherwise show up to 3 genuine
-    near-misses and nothing weaker.
-    """
+    """One short cell: the single best candidate, or blank if there is none."""
     exact = [s for s in sugg if s.exact]
     keep = exact or [s for s in sugg if s.score >= MIN_SUGGESTION_SCORE]
-    return "  |  ".join(s.label() for s in keep[:MAX_SUGGESTIONS])
+    return " | ".join(s.label() for s in keep[:MAX_SUGGESTIONS])
 
 
 def suggest_for_listing(listing: Listing, pos_rows: list[PosRow],
@@ -222,14 +226,14 @@ def suggest_for_listing(listing: Listing, pos_rows: list[PosRow],
 
 
 def format_pos_suggestions(sugg: list[tuple[Listing, float, bool]]) -> str:
-    """Compact cell for the New Masterlist SKUs tab — MP + variant + score."""
+    """Compact cell for the New Masterlist SKUs tab — MP + variant."""
     exact = [t for t in sugg if t[2]]
     keep = exact or [t for t in sugg if t[1] >= MIN_SUGGESTION_SCORE]
-    return "  |  ".join(
+    return " | ".join(
         f"{l.mp_number or '(no MP)'} · "
         f"{_variant(l.capacity, l.ram, l.colour) or l.backend_name} · "
-        f"{int(sc * 100)}%"
-        for l, sc, _ in keep[:MAX_SUGGESTIONS]
+        f"{'✓' if ex else f'{int(sc * 100)}%'}"
+        for l, sc, ex in keep[:MAX_SUGGESTIONS]
     )
 
 

@@ -76,9 +76,9 @@ WIDTHS = {
     "LOCKED Masterlist ID(s)": 22, "ML Model(s)|Color": 62, "ML Available Qty": 15,
     "Current Seller Stock": 18, "Target Stock": 13, "# SKUs": 9, "Status": 28,
     "Masterlist Stock Type ID": 22, "Category": 12, "Brand": 16, "Model": 42,
-    "Color": 22, "Available Qty": 13, "Suggested MP Matches": 46,
+    "Color": 22, "Available Qty": 13, "Suggested MP Matches": 36,
     "Link to MP Number": 18, "Reviewer Decision": 26, "Notes": 30,
-    "Suggested Masterlist Matches": 46,
+    "Suggested Masterlist Matches": 36,
     "Corrected Masterlist ID": 22,
 }
 
