@@ -1,5 +1,5 @@
 """
-IShopChangi Stock Sync — v2
+IShopChangi Stock Sync Tool — v2
 Mister Mobile · Dealer Inventory Bulk Update
 
 Streamlit Community Cloud entry point.
@@ -33,7 +33,7 @@ from core.registry_writer import build_registry_workbook
 from core.writer import verify_written, write_bulk_file
 
 st.set_page_config(
-    page_title="IShopChangi Stock Sync · Mister Mobile",
+    page_title="IShopChangi Stock Sync Tool · Mister Mobile",
     page_icon="🟡",
     layout="wide",
 )
@@ -109,7 +109,7 @@ st.markdown(
 <div class="mm-banner">
   <div class="mm-logo">MM</div>
   <div>
-    <h1>IShopChangi Stock Sync</h1>
+    <h1>IShopChangi Stock Sync Tool</h1>
     <p>Mister Mobile · Dealer Inventory Bulk Update · v{__version__}</p>
   </div>
 </div>
