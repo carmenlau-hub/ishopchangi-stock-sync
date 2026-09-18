@@ -25,7 +25,6 @@ from core.registry import (
     DECISION_SKIP,
     DECISIONS,
     apply_new_ml_decisions,
-    apply_review_decisions,
     build_plan,
     load_registry,
     validation_summary,
@@ -262,6 +261,23 @@ if _warns:
         for w in _warns:
             st.markdown(f"- {w}")
 
+# Match Review normally means POS has nothing for that listing, so parking it
+# is right. The exception worth stopping for: a parked row that DOES have an
+# exact POS match with stock — nothing syncs it, so the units sit on sale
+# unmanaged. Loud, because it is the oversell case.
+if plan.parked_conflicts:
+    st.error(
+        f"**{len(plan.parked_conflicts)} POS SKU(s) were parked by mistake and "
+        "have been moved back to New Masterlist SKUs.** Each one still has POS "
+        "stock AND matches a real IShopChangi listing exactly, so the listing "
+        "does exist — re-link them below."
+    )
+    st.dataframe(
+        pd.DataFrame(sorted(plan.parked_conflicts,
+                            key=lambda c: -c["POS Qty"])),
+        use_container_width=True, hide_index=True,
+    )
+
 # ---------------------------------------------------------------------------
 # Downloads — available immediately, no need to scroll or confirm first
 # ---------------------------------------------------------------------------
@@ -430,37 +446,17 @@ with tabs[1]:
 
 with tabs[2]:
     st.caption(
-        "IShopChangi listings with no locked match. **Seller stock is left "
-        "exactly as it is** until you review and confirm. Set a decision here to "
-        "lock a match for every future run."
+        "**Read-only record.** These listings exist on IShopChangi but POS has "
+        "nothing for them today, so there is nothing to link and their seller "
+        "stock is left exactly as it is. Reviewer Decision stays blank here — "
+        "all linking is done on the **New Masterlist SKUs** tab, because a "
+        "link can only be made from a POS SKU that actually exists."
     )
-    review_edited = st.data_editor(
+    st.dataframe(
         pd.DataFrame(plan.review_rows).drop(columns=["_row_no", "_auto_exact"],
                                             errors="ignore"),
-        use_container_width=True,
-        hide_index=True,
-        height=520,
-        disabled=["#", "MP Number", "Frontend Product Name (EN)",
-                  "Backend Product Name (EN)", "Product UUID", "SKU Code",
-                  "Brand", "Current Seller Stock",
-                  "Suggested Masterlist Matches"],
-        column_config={
-            "Suggested Masterlist Matches":
-                st.column_config.TextColumn("Suggested Masterlist Matches",
-                                            width="medium"),
-            "Corrected Masterlist ID": st.column_config.TextColumn(
-                "Corrected Masterlist ID",
-                help="One or more POS Stock Type IDs, separated by ';'"),
-            "Reviewer Decision": st.column_config.SelectboxColumn(
-                "Reviewer Decision", options=[""] + list(DECISIONS)),
-        },
-        key="review_editor",
+        use_container_width=True, hide_index=True, height=520,
     )
-    edited = review_edited.to_dict("records")
-    for orig, ed in zip(plan.review_rows, edited):
-        orig["Corrected Masterlist ID"] = ed.get("Corrected Masterlist ID", "")
-        orig["Reviewer Decision"] = ed.get("Reviewer Decision", "")
-        orig["Notes"] = ed.get("Notes", "")
 
 with tabs[3]:
     st.caption("Parked by you as not sold on IShopChangi. Never re-asked.")
@@ -516,7 +512,6 @@ st.divider()
 # ---------------------------------------------------------------------------
 if not (_unreviewed or _needs_mp) and plan.new_ml_rows:
     if st.button("🔒 Lock reviewed matches & rebuild registry"):
-        apply_review_decisions(plan, reg)
         final = apply_new_ml_decisions(plan, reg, exp, pos)
 
         if final.errors:
